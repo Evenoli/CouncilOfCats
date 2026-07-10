@@ -10,16 +10,17 @@ from pathlib import Path
 from typing import Any
 
 from council_common import (
-    CAT_DISPLAY_NAMES,
     PATCHES_DIR,
     REVIEWS_DIR,
     CouncilBrief,
-    OllamaClient,
+    LLMClient,
     PERSONAS_DIR,
     PROJECT_ROOT,
     extract_cat_lines,
     extract_json_object,
     format_prompt,
+    get_cat_profiles,
+    get_display_name,
     load_council_memory,
     load_cat_system_prompt,
     read_prompt,
@@ -69,29 +70,29 @@ def invoke_hermes_profile(config: dict[str, Any], profile: str, prompt: str) -> 
     return completed.stdout.strip()
 
 
-def fallback_brief(ollama: OllamaClient, raw_logs: str) -> CouncilBrief:
+def fallback_brief(llm: LLMClient, raw_logs: str) -> CouncilBrief:
     system_prompt = read_prompt("summarize_fallback_system.md")
     user_prompt = format_prompt(
         read_prompt("summarize_fallback_user.md"),
         raw_logs=raw_logs,
     )
-    summary = ollama.chat(system_prompt, user_prompt)
+    summary = llm.chat(system_prompt, user_prompt)
     return CouncilBrief(
         summary=summary,
         memory_callbacks="",
         memory_updates="",
-        source="ollama-fallback",
+        source="llm-fallback",
     )
 
 
 def pre_council_analysis(
     config: dict[str, Any],
-    ollama: OllamaClient,
+    llm: LLMClient,
     raw_logs: str,
 ) -> CouncilBrief:
     if not is_hermes_available(config):
-        logger.warning("Hermes unavailable; using Ollama summarisation fallback.")
-        return fallback_brief(ollama, raw_logs)
+        logger.warning("Hermes unavailable; using LLM summarisation fallback.")
+        return fallback_brief(llm, raw_logs)
 
     memory = load_council_memory()
     prompt = (
@@ -110,8 +111,8 @@ def pre_council_analysis(
             source=f"hermes:{profile}",
         )
     except (RuntimeError, json.JSONDecodeError, KeyError) as exc:
-        logger.exception("Hermes chronicler failed; falling back to Ollama: %s", exc)
-        return fallback_brief(ollama, raw_logs)
+        logger.exception("Hermes chronicler failed; falling back to LLM: %s", exc)
+        return fallback_brief(llm, raw_logs)
 
     if brief.memory_updates:
         updated_memory = f"{memory}\n\n## {week_stamp()}\n{brief.memory_updates}".strip()
@@ -120,9 +121,10 @@ def pre_council_analysis(
     return brief
 
 
-def build_cat_extractions(transcript: str) -> str:
+def build_cat_extractions(config: dict[str, Any], transcript: str) -> str:
     sections: list[str] = []
-    for slug, display_name in CAT_DISPLAY_NAMES.items():
+    for slug in get_cat_profiles(config):
+        display_name = get_display_name(config, slug)
         lines = extract_cat_lines(transcript, display_name)
         sections.append(f"### {display_name}\n{lines}")
     return "\n\n".join(sections)
@@ -137,8 +139,8 @@ def run_cat_self_reviews(
     if not is_hermes_available(config):
         return reviews
 
-    for slug in config["hermes"]["cat_profiles"]:
-        display_name = CAT_DISPLAY_NAMES[slug]
+    for slug in get_cat_profiles(config):
+        display_name = get_display_name(config, slug)
         prompt = format_prompt(
             read_prompt("cat_self_review.md"),
             soul=load_cat_system_prompt(slug).split("\n\n", 1)[0],
@@ -205,11 +207,11 @@ def save_review_artifacts(
 
 def post_council_review(
     config: dict[str, Any],
-    ollama: OllamaClient,
+    llm: LLMClient,
     summary: str,
     transcript: str,
 ) -> Path | None:
-    cat_extractions = build_cat_extractions(transcript)
+    cat_extractions = build_cat_extractions(config, transcript)
     cat_self_reviews = run_cat_self_reviews(config, summary, transcript)
 
     if is_hermes_available(config):
@@ -227,7 +229,6 @@ def post_council_review(
         except (RuntimeError, json.JSONDecodeError) as exc:
             logger.exception("Hermes curator failed: %s", exc)
 
-    # Fallback: apply any successful per-cat self reviews directly.
     fallback_payload: dict[str, Any] = {
         "overall_notes": "Hermes curator unavailable; saved per-cat self reviews only.",
         "cats": {},
@@ -253,7 +254,7 @@ def _read_hermes_skill_markdown(skill_dir: Path) -> str:
 
 def sync_personas_from_hermes(config: dict[str, Any]) -> None:
     """Copy persona files from Hermes profiles into the project personas/ directory."""
-    for slug in config["hermes"]["cat_profiles"]:
+    for slug in get_cat_profiles(config):
         profile_dir = hermes_profile_dir(config, slug)
         if not profile_dir.exists():
             logger.debug("Hermes profile missing, skipping sync: %s", slug)
@@ -274,7 +275,7 @@ def sync_personas_from_hermes(config: dict[str, Any]) -> None:
 
 def seed_hermes_profiles(config: dict[str, Any]) -> None:
     """Copy project persona seeds into Hermes profile directories if they exist."""
-    for slug in config["hermes"]["cat_profiles"]:
+    for slug in get_cat_profiles(config):
         profile_dir = hermes_profile_dir(config, slug)
         profile_dir.mkdir(parents=True, exist_ok=True)
 

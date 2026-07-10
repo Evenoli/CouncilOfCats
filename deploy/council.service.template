@@ -1,0 +1,19 @@
+[Unit]
+Description=Council of Cats Discord Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@SERVICE_USER@
+WorkingDirectory=@INSTALL_DIR@
+EnvironmentFile=@INSTALL_DIR@/council.env
+ExecStart=@INSTALL_DIR@/scripts/start_council.sh
+Restart=always
+RestartSec=10
+
+# Hardening (lightweight)
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

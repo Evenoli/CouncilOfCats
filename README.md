@@ -1,135 +1,103 @@
 # Council of Cats
 
-A weekly Discord simulation where cat personas debate your community's drama. A VPS bot scrapes channel logs, a local Windows orchestrator runs the council via Ollama, and an optional [Hermes Agent](https://hermes-agent.nousresearch.com/) layer handles pre-council analysis and post-council persona refinement.
+A weekly Discord simulation where cat personas debate your community's drama. Everything runs on a **single VPS**: a Discord bot scrapes channel logs, Gemini generates the council debate, and an optional [Hermes Agent](https://hermes-agent.nousresearch.com/) layer handles pre-council analysis and post-council persona refinement.
 
 ## Architecture
 
 ```text
-Discord (VPS)  --tunnel-->  Local Flask orchestrator  -->  Ollama
-                                |
-                                +--> Hermes (chronicler + curator + cat profiles)
-                                |
-                                +--> Discord webhooks (one per cat)
+Discord  -->  council_service.py  -->  Gemini API
+                      |
+                      +--> Hermes (chronicler + curator + cat profiles)
+                      |
+                      +--> Discord webhooks (one per cat)
 ```
 
-Production debate turn-taking is **deterministic** in `local_orchestrator.py`. Hermes is a research sidecar, not the live orchestrator.
+Production debate turn-taking is **deterministic** in `council_orchestrator.py`. Hermes is a research sidecar, not the live orchestrator.
+
+A split deployment (local Windows PC + Ollama + tunnel) is still supported via legacy `ollama` config — see [Migrating to local inference](#migrating-to-local-inference).
 
 ## Repository layout
 
 ```text
 council-of-cats/
 ├── config.example.json
-├── council_common.py
-├── vps_gateway.py
-├── local_orchestrator.py
+├── council_common.py          # Shared config, LLM client, personas, webhooks
+├── council_orchestrator.py    # Debate pipeline (pre-analysis → turns → post-review)
+├── council_service.py         # Discord bot entry point (run this on the VPS)
 ├── hermes_research.py
-├── personas/                 # SOUL.md + council-voice.md per cat
-├── prompts/                  # Base prompts for all pipeline stages
-├── research/                 # Transcripts, reviews, memory, persona patches
+├── personas/                  # SOUL.md + council-voice.md per cat
+├── prompts/
+├── research/
 └── scripts/
-    └── seed_hermes_profiles.py
+    ├── seed_hermes_profiles.py
+    └── run_council_test.py    # Manual test without Discord
 ```
 
 ## Prerequisites
 
-### Local Windows PC (orchestrator)
+### VPS (single host)
 - Python 3.11+
-- [Ollama](https://ollama.com/) with a chat model pulled, e.g.:
-  ```powershell
-  ollama pull qwen2.5:32b-instruct
-  ```
-- Optional but intended: [Hermes Agent](https://hermes-agent.nousresearch.com/)
-- A tunnel exposing your local Flask port (Cloudflare Tunnel or ngrok)
-
-### Linux VPS (gateway)
-- Python 3.11+
-- Discord bot token with `MESSAGE CONTENT INTENT` enabled
-- Outbound HTTPS to your tunnel URL
+- Linux (Ubuntu/Debian recommended)
+- Discord bot token with **MESSAGE CONTENT INTENT** enabled
+- [Gemini API key](https://aistudio.google.com/apikey)
+- Optional: [Hermes Agent](https://hermes-agent.nousresearch.com/) on the same VPS
 
 ### Discord
 - One source channel (logs are read from here)
-- Four webhook URLs (Chair Cat, Barnaby, Cleo, Pip)
+- Four webhook URLs (Chair Cat, Barnaby, Cleo, Kiwi)
 - Bot invited to the server with read/send permissions
 
+Hermes and OpenClaw can run on the same VPS if they use **separate Discord bots/channels** — do not route the council through another agent's gateway.
+
 ---
 
-## 1. Initial setup (local machine)
+## 1. VPS setup
 
-```powershell
-cd "path\to\CouncilOfCats"
-python -m venv .venv
-copy config.example.json config.json
+Automated bootstrap (recommended):
+
+```bash
+git clone <your-repo> council-of-cats
+cd council-of-cats
+./scripts/vps_setup.sh --install-systemd --user "$USER"
+# Optional Hermes:
+./scripts/vps_setup.sh --install-hermes
 ```
 
-Use the venv Python directly (no activation script needed):
+Then fill in secrets:
 
-```powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe local_orchestrator.py
+```bash
+cp deploy/council.env.example council.env   # skipped if vps_setup.sh already created it
+chmod 600 council.env
+nano council.env
 ```
 
-**If you prefer activating the venv** and PowerShell blocks `activate` with *"running scripts is disabled on this system"*, use one of these:
+`council.env` fields (never commit this file):
 
-| Option | Command |
+| Variable | Purpose |
 |---|---|
-| **Command Prompt** (simplest) | `\.venv\Scripts\activate.bat` |
-| **Bypass for this session only** | `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` then `.\.venv\Scripts\activate` |
-| **Allow your user permanently** | `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned` then `.\.venv\Scripts\activate` |
+| `LLM_API_KEY` | Gemini API key |
+| `DISCORD_BOT_TOKEN` | Discord bot token |
+| `DISCORD_CHANNEL_ID` | Source channel for log scraping |
+| `DISCORD_ADMIN_USER_IDS` | Comma-separated user IDs allowed to run `!council run` |
+| `WEBHOOK_CHAIR_CAT` | Chair Cat webhook URL |
+| `WEBHOOK_BARNABY` | Barnaby webhook URL |
+| `WEBHOOK_CLEO` | Cleo webhook URL |
+| `WEBHOOK_KIWI` | Kiwi webhook URL |
 
-`RemoteSigned` for `CurrentUser` is the usual fix on personal Windows machines; it does not require admin.
+Verify readiness:
 
-Edit `config.json`:
-
-| Key | Purpose |
-|---|---|
-| `shared_secret` | Long random string shared with the VPS |
-| `ollama.base_url` | Usually `http://localhost:11434/v1` |
-| `ollama.model` | Model tag, e.g. `qwen2.5:32b-instruct` |
-| `webhooks.*` | Discord webhook URL per cat slug |
-| `orchestrator.host` / `port` | Flask bind address (default `0.0.0.0:5000`) |
-| `hermes.enabled` | Set `false` to skip Hermes and use Ollama fallback only |
-
-Verify Ollama is running:
-
-```powershell
-curl http://localhost:11434/api/tags
+```bash
+python scripts/preflight_check.py
 ```
 
-Start the orchestrator:
+Start the service:
 
-```powershell
-.\.venv\Scripts\python.exe local_orchestrator.py
+```bash
+./scripts/start_council.sh
+# or: sudo systemctl enable --now council
 ```
 
-Health check:
-
-```powershell
-curl http://localhost:5000/health
-```
-
----
-
-## 2. Expose the local orchestrator (tunnel)
-
-The VPS must reach `POST /council` on your PC. Example with Cloudflare Tunnel:
-
-```powershell
-cloudflared tunnel --url http://localhost:5000
-```
-
-Copy the public HTTPS URL into `config.json` on **both** machines as `local_orchestrator_url`, e.g.:
-
-```json
-"local_orchestrator_url": "https://abc123.trycloudflare.com/council"
-```
-
-Keep the tunnel and `local_orchestrator.py` running during council sessions.
-
----
-
-## 3. VPS gateway setup
-
-On the VPS:
+Manual setup (equivalent):
 
 ```bash
 git clone <your-repo> council-of-cats
@@ -140,156 +108,143 @@ pip install -r requirements.txt
 cp config.example.json config.json
 ```
 
-Edit `config.json` on the VPS with at least:
+Edit `config.json` for non-secret settings (or use env vars above for secrets):
 
-```json
-{
-  "shared_secret": "SAME_AS_LOCAL",
-  "local_orchestrator_url": "https://your-tunnel.example.com/council",
-  "discord": {
-    "bot_token": "YOUR_BOT_TOKEN",
-    "channel_id": "SOURCE_CHANNEL_ID",
-    "admin_user_ids": ["YOUR_USER_ID"]
-  }
-}
-```
+| Key | Purpose |
+|---|---|
+| `llm.model` | e.g. `gemini-2.5-flash` |
+| `cats.debate_order` | Round-robin council members |
+| `hermes.enabled` | Set `false` to skip Hermes (LLM fallback for summary) |
 
-Run the gateway (use systemd, pm2, or screen for persistence):
-
-```bash
-python vps_gateway.py
-```
-
-Trigger a council run from Discord:
+Trigger from Discord:
 
 ```text
 !council run
 ```
 
-Only users listed in `admin_user_ids` can trigger a run.
-
 ---
 
-## 4. Hermes setup (optional research layer)
+## 2. Hermes setup (optional research layer)
 
-Install Hermes on the local Windows machine:
+Install Hermes on the VPS:
 
-```powershell
-iex (irm https://hermes-agent.nousresearch.com/install.ps1)
+```bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 hermes setup --portal
 ```
 
-Create profiles and seed persona files:
+Point Hermes at Gemini in its own config, then seed council profiles:
 
-```powershell
+```bash
 python scripts/seed_hermes_profiles.py
 ```
-
-This creates six profiles:
 
 | Profile | Role |
 |---|---|
 | `council-chronicler` | Pre-council analysis + cross-week memory |
 | `council-curator` | Post-council review orchestrator |
-| `barnaby`, `cleo`, `pip`, `chair-cat` | Persona storage and self-review |
+| `barnaby`, `cleo`, `kiwi`, `chair-cat` | Persona storage and self-review |
 
-Recommended Hermes config notes:
-- Give cat profiles **minimal toolsets** during review (empty `hermes.toolsets` in `config.json` is fine).
-- Use a different model/provider for the Curator auxiliary LLM if possible.
-- Pin mature skills later with `hermes curator pin council-voice`.
+Recommended:
+- Minimal toolsets for cat profiles (`hermes.toolsets: ""` in config).
+- Pin mature skills with `hermes curator pin council-voice`.
+- Use a different model for the Curator auxiliary LLM if possible.
 
 ### Hermes runtime behaviour
 
 | Step | Hermes profile | Fallback |
 |---|---|---|
-| Pre-council analysis | `council-chronicler` | Ollama single-shot summary |
+| Pre-council analysis | `council-chronicler` | Gemini single-shot summary |
 | Live debate | *(none — hardcoded loop)* | — |
-| Post-council review | `council-curator` + cat profiles | Saves per-cat reviews only |
-
-Hermes is invoked via:
-
-```text
-hermes -p <profile> -z "<prompt>"
-```
-
-After review, persona files sync from `~/.hermes/profiles/<cat>/` into `personas/`.
+| Post-council review | `council-curator` + cat profiles | Per-cat self-reviews only |
 
 ---
 
-## 5. Pipeline walkthrough
+## 3. Pipeline walkthrough
 
-1. **VPS** — `!council run` fetches 7 days of messages, sanitizes to `[Username]: message`, POSTs to `/council`.
-2. **Pre-council** — chronicler returns JSON: summary, memory callbacks, memory updates. Memory is appended to `research/memory/council_memory.md`.
-3. **Debate** — 8 deterministic turns:
+1. **Discord** — `!council run` fetches 7 days of messages, sanitizes to `[Username]: message`.
+2. **Pre-council** — chronicler returns JSON: summary, memory callbacks, memory updates.
+3. **Debate** — 8 deterministic turns via Gemini:
    - Chair Cat intro
-   - Barnaby → Cleo → Pip (×2 rounds)
+   - Barnaby → Cleo → Kiwi (×2 rounds)
    - Chair Cat closing rulings
 4. **Discord** — each turn posts to that cat's webhook with a 2-second delay.
 5. **Post-council** — curator reviews transcript, patches `council-voice.md`, writes optional `SOUL.md` candidates to `research/persona-patches/`.
 
-Artifacts land in:
-- `research/transcripts/` — full weekly transcripts
+Artifacts:
+- `research/transcripts/` — weekly transcripts
 - `research/reviews/` — JSON review reports
 - `research/persona-patches/` — proposed SOUL changes for human review
+- `research/memory/council_memory.md` — cross-week memory
 - `personas/*/council-voice.md` — evolving voice guidance
 
 ---
 
-## 6. Manual local test (no Discord bot)
+## 4. Manual test (no Discord)
 
-With `local_orchestrator.py` running:
-
-```powershell
-curl -X POST http://localhost:5000/council `
-  -H "Content-Type: application/json" `
-  -d "{\"secret\":\"YOUR_SECRET\",\"raw_logs\":\"[Alice]: We argued about pizza again\n[Bob]: lasers\"}"
+```bash
+python scripts/run_council_test.py
+python scripts/run_council_test.py --logs-file sample_logs.txt
 ```
+
+This runs the full pipeline including webhooks — use a test Discord server or temporarily disable webhooks if you only want transcript output.
 
 ---
 
-## 7. systemd examples
+## 5. systemd service
 
-### VPS gateway (`/etc/systemd/system/council-gateway.service`)
+`/etc/systemd/system/council.service`:
 
 ```ini
 [Unit]
-Description=Council of Cats Discord Gateway
+Description=Council of Cats
 After=network.target
 
 [Service]
 Type=simple
 User=council
 WorkingDirectory=/opt/council-of-cats
-ExecStart=/opt/council-of-cats/.venv/bin/python vps_gateway.py
+Environment=LLM_API_KEY=your-gemini-key-here
+ExecStart=/opt/council-of-cats/.venv/bin/python council_service.py
 Restart=always
-RestartSec=5
+RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-### Local orchestrator (Windows Task Scheduler or NSSM)
-
-Run at logon:
-
-```powershell
-cd C:\CouncilOfCats
-.\.venv\Scripts\python.exe local_orchestrator.py
+```bash
+sudo systemctl enable --now council
+sudo journalctl -u council -f
 ```
-
-Pair with a persistent Cloudflare tunnel service pointing at port 5000.
 
 ---
 
-## 8. Prompt reference
+## 6. Migrating to local inference
+
+To run the debate loop on a Windows PC with Ollama again, replace the `llm` block with legacy Ollama config and split the gateway:
+
+```json
+"llm": {
+  "base_url": "http://localhost:11434/v1",
+  "api_key": "ollama",
+  "model": "qwen2.5:32b-instruct"
+}
+```
+
+You would then reintroduce a separate HTTP receiver or run `scripts/run_council_test.py` locally. The pipeline code (`council_orchestrator.py`) is unchanged — only deployment topology differs.
+
+---
+
+## 7. Prompt reference
 
 | File | Used by |
 |---|---|
 | `prompts/chronicler_system.md` | Hermes chronicler / seeded SOUL |
 | `prompts/chronicler_user.md` | Pre-council user prompt |
-| `prompts/summarize_fallback_*.md` | Ollama fallback summary |
+| `prompts/summarize_fallback_*.md` | LLM fallback summary |
 | `prompts/chair_intro_user.md` | Chair Cat opening turn |
-| `prompts/debate_turn_user.md` | Barnaby / Cleo / Pip turns |
+| `prompts/debate_turn_user.md` | Council member turns |
 | `prompts/chair_closing_user.md` | Chair Cat closing turn |
 | `prompts/curator_system.md` | Hermes curator / seeded SOUL |
 | `prompts/curator_user.md` | Post-council review prompt |
@@ -299,22 +254,23 @@ Pair with a persistent Cloudflare tunnel service pointing at port 5000.
 
 ---
 
-## 9. Troubleshooting
+## 8. Troubleshooting
 
 | Symptom | Check |
 |---|---|
-| VPS cannot reach orchestrator | Tunnel running? `local_orchestrator_url` ends with `/council`? |
-| `401 unauthorized` | `shared_secret` must match on VPS and local |
-| Ollama 400 errors | Do not pass `thinking` / `reasoning_effort` params (handled in code) |
-| Hermes skipped | `hermes.enabled: false`, or `hermes` not on PATH — fallback summary still runs |
-| Empty council output | Model pulled in Ollama? `ollama.model` matches `ollama list`? |
+| `LLM API key missing` | Set `llm.api_key` or `LLM_API_KEY` env var |
+| Gemini auth errors | API key valid? Billing enabled on Google AI Studio? |
+| Hermes skipped | `hermes.enabled: false` or `hermes` not on PATH |
+| Empty council output | Model name correct? Check service logs |
 | Webhooks fail | URLs valid? Messages under Discord 2000-char limit? |
+| Unauthorized trigger | Your user ID in `admin_user_ids`? |
 
 ---
 
-## 10. Security notes
+## 9. Security notes
 
-- Never commit `config.json` (tokens, webhooks, shared secret).
+- Never commit `config.json` or `council.env` (tokens, webhooks, API keys).
+- Prefer `council.env` + `LLM_API_KEY` over hardcoding secrets in `config.json`.
 - Restrict `!council run` to `admin_user_ids`.
 - Review `research/persona-patches/` before applying any `SOUL.md` changes.
 - Version-control `personas/` and inspect `git diff` after weekly reviews.

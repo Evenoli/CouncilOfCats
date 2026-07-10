@@ -6,18 +6,14 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
-from council_common import load_config
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from council_common import get_cat_profiles, load_config
 from hermes_research import is_hermes_available, seed_hermes_profiles
 
-PROFILES = [
-    "council-chronicler",
-    "council-curator",
-    "barnaby",
-    "cleo",
-    "pip",
-    "chair-cat",
-]
+SYSTEM_PROFILES = ["council-chronicler", "council-curator"]
 
 
 def create_profiles(config: dict) -> None:
@@ -27,7 +23,13 @@ def create_profiles(config: dict) -> None:
         print("Install Hermes first, then re-run this script.")
         sys.exit(1)
 
-    for profile in PROFILES:
+    profiles = SYSTEM_PROFILES + get_cat_profiles(config)
+    seen: set[str] = set()
+    for profile in profiles:
+        if profile in seen:
+            continue
+        seen.add(profile)
+
         completed = subprocess.run(
             [cli, "profile", "create", profile],
             capture_output=True,

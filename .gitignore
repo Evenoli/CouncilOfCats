@@ -1,4 +1,5 @@
 config.json
+council.env
 __pycache__/
 *.py[cod]
 .venv/

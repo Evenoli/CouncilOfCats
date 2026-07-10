@@ -1,6 +1,10 @@
 {
-  "shared_secret": "CHANGE_ME_TO_A_LONG_RANDOM_STRING",
-  "local_orchestrator_url": "https://your-tunnel.example.com/council",
+  "llm": {
+    "provider": "gemini",
+    "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+    "api_key": "YOUR_GEMINI_API_KEY",
+    "model": "gemini-2.5-flash"
+  },
 
   "discord": {
     "bot_token": "YOUR_DISCORD_BOT_TOKEN",
@@ -8,16 +12,26 @@
     "admin_user_ids": ["YOUR_DISCORD_USER_ID"]
   },
 
-  "ollama": {
-    "base_url": "http://localhost:11434/v1",
-    "model": "qwen2.5:32b-instruct"
-  },
-
   "webhooks": {
     "chair-cat": "https://discord.com/api/webhooks/CHAIR_CAT_WEBHOOK",
     "barnaby": "https://discord.com/api/webhooks/BARNABY_WEBHOOK",
     "cleo": "https://discord.com/api/webhooks/CLEO_WEBHOOK",
-    "pip": "https://discord.com/api/webhooks/PIP_WEBHOOK"
+    "kiwi": "https://discord.com/api/webhooks/KIWI_WEBHOOK"
+  },
+
+  "cats": {
+    "debate_order": ["barnaby", "cleo", "kiwi"],
+    "display_names": {
+      "chair-cat": "Chair Cat",
+      "barnaby": "Barnaby",
+      "cleo": "Cleo",
+      "kiwi": "Kiwi"
+    }
+  },
+
+  "council": {
+    "log_days": 7,
+    "webhook_delay_seconds": 2
   },
 
   "hermes": {
@@ -26,15 +40,8 @@
     "home": "~/.hermes",
     "chronicler_profile": "council-chronicler",
     "curator_profile": "council-curator",
-    "cat_profiles": ["barnaby", "cleo", "pip", "chair-cat"],
+    "cat_profiles": ["barnaby", "cleo", "kiwi", "chair-cat"],
     "timeout_seconds": 900,
     "toolsets": ""
-  },
-
-  "orchestrator": {
-    "host": "0.0.0.0",
-    "port": 5000,
-    "webhook_delay_seconds": 2,
-    "log_days": 7
   }
 }

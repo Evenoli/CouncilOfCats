@@ -1,4 +1,4 @@
-"""VPS Discord gateway: fetch logs and forward them to the local orchestrator."""
+"""VPS Discord service: scrape logs and run the council pipeline in-process."""
 
 from __future__ import annotations
 
@@ -7,9 +7,9 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 import discord
-import requests
 
 from council_common import load_config
+from council_orchestrator import run_council_pipeline
 
 logging.basicConfig(
     level=logging.INFO,
@@ -49,27 +49,13 @@ async def fetch_channel_logs(
     return "\n".join(lines)
 
 
-def post_to_orchestrator(raw_logs: str, config: dict) -> dict:
-    payload = {
-        "secret": config["shared_secret"],
-        "raw_logs": raw_logs,
-    }
-    response = requests.post(
-        config["local_orchestrator_url"],
-        json=payload,
-        timeout=120,
-    )
-    response.raise_for_status()
-    return response.json()
-
-
-class CouncilGateway(discord.Client):
+class CouncilService(discord.Client):
     def __init__(self, config: dict) -> None:
         super().__init__(intents=intents)
         self.config = config
 
     async def on_ready(self) -> None:
-        logger.info("Logged in as %s", self.user)
+        logger.info("Council service logged in as %s", self.user)
 
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot:
@@ -93,27 +79,27 @@ class CouncilGateway(discord.Client):
             return
 
         await message.channel.send("Summoning the High Council… fetching logs.")
-        days = int(self.config["orchestrator"].get("log_days", 7))
+        days = int(self.config.get("council", {}).get("log_days", 7))
         raw_logs = await fetch_channel_logs(channel, days)
 
         try:
-            result = await asyncio.to_thread(post_to_orchestrator, raw_logs, self.config)
+            result = await asyncio.to_thread(run_council_pipeline, raw_logs, self.config)
             await message.channel.send(
-                "Council run accepted by the local orchestrator.\n"
+                "The High Council has convened.\n"
                 f"Brief source: `{result.get('brief_source', 'unknown')}`\n"
                 f"Transcript: `{result.get('transcript_path', 'pending')}`"
             )
-        except requests.RequestException as exc:
-            logger.exception("Failed to reach local orchestrator.")
+        except Exception as exc:
+            logger.exception("Council pipeline failed.")
             await message.channel.send(
-                "Could not reach the local orchestrator. Check the tunnel and local service.\n"
+                "The council could not complete its session. Check the service logs.\n"
                 f"Error: {exc}"
             )
 
 
 def main() -> None:
     config = load_config()
-    client = CouncilGateway(config)
+    client = CouncilService(config)
     client.run(config["discord"]["bot_token"])
 
 
