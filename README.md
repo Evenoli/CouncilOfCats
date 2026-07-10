@@ -58,10 +58,25 @@ council-of-cats/
 ```powershell
 cd "path\to\CouncilOfCats"
 python -m venv .venv
-.\.venv\Scripts\activate
-pip install -r requirements.txt
 copy config.example.json config.json
 ```
+
+Use the venv Python directly (no activation script needed):
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe local_orchestrator.py
+```
+
+**If you prefer activating the venv** and PowerShell blocks `activate` with *"running scripts is disabled on this system"*, use one of these:
+
+| Option | Command |
+|---|---|
+| **Command Prompt** (simplest) | `\.venv\Scripts\activate.bat` |
+| **Bypass for this session only** | `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` then `.\.venv\Scripts\activate` |
+| **Allow your user permanently** | `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned` then `.\.venv\Scripts\activate` |
+
+`RemoteSigned` for `CurrentUser` is the usual fix on personal Windows machines; it does not require admin.
 
 Edit `config.json`:
 
@@ -83,7 +98,7 @@ curl http://localhost:11434/api/tags
 Start the orchestrator:
 
 ```powershell
-python local_orchestrator.py
+.\.venv\Scripts\python.exe local_orchestrator.py
 ```
 
 Health check:
