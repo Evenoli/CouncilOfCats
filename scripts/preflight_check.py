@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -13,11 +14,18 @@ CONFIG_PATH = PROJECT_ROOT / "config.json"
 ENV_PATH = PROJECT_ROOT / "council.env"
 
 PLACEHOLDER_MARKERS = ("YOUR_", "CHANGE_ME", "example.com")
+DISCORD_WEBHOOK_RE = re.compile(
+    r"^https://discord(?:app)?\.com/api/webhooks/\d+/[\w-]+$"
+)
 
 
 def is_placeholder(value: str) -> bool:
     upper = value.upper()
     return any(marker in upper for marker in PLACEHOLDER_MARKERS)
+
+
+def is_valid_webhook(url: str) -> bool:
+    return bool(DISCORD_WEBHOOK_RE.match(url.strip()))
 
 
 def check() -> list[str]:
@@ -45,7 +53,7 @@ def check() -> list[str]:
         issues.append("DISCORD_BOT_TOKEN not set")
     if not channel or is_placeholder(str(channel)):
         issues.append("DISCORD_CHANNEL_ID not set")
-    if not admins.strip():
+    if not admins.strip() or is_placeholder(admins):
         issues.append("DISCORD_ADMIN_USER_IDS not set")
 
     webhooks = config.get("webhooks", {})
@@ -57,7 +65,7 @@ def check() -> list[str]:
     }
     for slug, env_name in webhook_env.items():
         url = os.environ.get(env_name, "") or webhooks.get(slug, "")
-        if not url or is_placeholder(str(url)):
+        if not url or not is_valid_webhook(str(url)):
             issues.append(f"{env_name} / webhooks.{slug} not set")
 
     venv_python = PROJECT_ROOT / ".venv" / "bin" / "python"

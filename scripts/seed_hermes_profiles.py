@@ -11,7 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from council_common import get_cat_profiles, load_config
-from hermes_research import is_hermes_available, seed_hermes_profiles
+from hermes_research import is_hermes_available, seed_hermes_profiles, sync_hermes_runtime_config
 
 SYSTEM_PROFILES = ["council-chronicler", "council-curator"]
 
@@ -31,7 +31,7 @@ def create_profiles(config: dict) -> None:
         seen.add(profile)
 
         completed = subprocess.run(
-            [cli, "profile", "create", profile],
+            [cli, "profile", "create", profile, "--clone"],
             capture_output=True,
             text=True,
             check=False,
@@ -54,6 +54,7 @@ def main() -> None:
 
     create_profiles(config)
     seed_hermes_profiles(config)
+    sync_hermes_runtime_config(config)
     print("Seeded persona files into Hermes profiles.")
     if is_hermes_available(config):
         print("Hermes CLI is available for council runs.")

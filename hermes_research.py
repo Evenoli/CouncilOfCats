@@ -273,6 +273,50 @@ def sync_personas_from_hermes(config: dict[str, Any]) -> None:
             (target_dir / "council-voice.md").write_text(skill_markdown + "\n", encoding="utf-8")
 
 
+def sync_hermes_runtime_config(config: dict[str, Any]) -> None:
+    """Copy model provider settings and Gemini API key into each council profile.
+
+    Hermes profiles are isolated — `hermes model` on default does not apply to `-p` profiles.
+    """
+    hermes_root = hermes_home(config)
+    global_env = hermes_root / ".env"
+    global_config = hermes_root / "config.yaml"
+
+    api_key_line = ""
+    if global_env.exists():
+        for line in global_env.read_text(encoding="utf-8").splitlines():
+            if line.startswith(("GOOGLE_API_KEY=", "GEMINI_API_KEY=")):
+                api_key_line = line.strip()
+                break
+
+    profiles = [
+        config["hermes"]["chronicler_profile"],
+        config["hermes"]["curator_profile"],
+        *get_cat_profiles(config),
+    ]
+    seen: set[str] = set()
+    for profile in profiles:
+        if profile in seen:
+            continue
+        seen.add(profile)
+
+        profile_dir = hermes_profile_dir(config, profile)
+        if not profile_dir.exists():
+            continue
+
+        if global_config.exists():
+            shutil.copy2(global_config, profile_dir / "config.yaml")
+
+        if api_key_line:
+            env_path = profile_dir / ".env"
+            existing = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
+            if api_key_line.split("=", 1)[0] not in existing:
+                env_path.write_text(
+                    (existing.rstrip() + "\n" + api_key_line + "\n").lstrip(),
+                    encoding="utf-8",
+                )
+
+
 def seed_hermes_profiles(config: dict[str, Any]) -> None:
     """Copy project persona seeds into Hermes profile directories if they exist."""
     for slug in get_cat_profiles(config):
@@ -291,12 +335,14 @@ def seed_hermes_profiles(config: dict[str, Any]) -> None:
 
     chronicler_dir = hermes_profile_dir(config, config["hermes"]["chronicler_profile"])
     chronicler_dir.mkdir(parents=True, exist_ok=True)
-    chronicler_soul = chronicler_dir / "SOUL.md"
-    if not chronicler_soul.exists():
-        chronicler_soul.write_text(read_prompt("chronicler_system.md") + "\n", encoding="utf-8")
+    (chronicler_dir / "SOUL.md").write_text(
+        read_prompt("chronicler_system.md") + "\n",
+        encoding="utf-8",
+    )
 
     curator_dir = hermes_profile_dir(config, config["hermes"]["curator_profile"])
     curator_dir.mkdir(parents=True, exist_ok=True)
-    curator_soul = curator_dir / "SOUL.md"
-    if not curator_soul.exists():
-        curator_soul.write_text(read_prompt("curator_system.md") + "\n", encoding="utf-8")
+    (curator_dir / "SOUL.md").write_text(
+        read_prompt("curator_system.md") + "\n",
+        encoding="utf-8",
+    )
