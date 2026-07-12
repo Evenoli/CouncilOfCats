@@ -8,7 +8,8 @@
 
   "discord": {
     "bot_token": "YOUR_DISCORD_BOT_TOKEN",
-    "channel_id": "YOUR_SOURCE_CHANNEL_ID",
+    "read_channel_id": "YOUR_READ_CHANNEL_ID",
+    "status_channel_id": "YOUR_STATUS_CHANNEL_ID",
     "admin_user_ids": ["YOUR_DISCORD_USER_ID"]
   },
 

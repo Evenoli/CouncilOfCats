@@ -8,7 +8,11 @@ from datetime import datetime, timedelta, timezone
 
 import discord
 
-from council_common import load_config
+from council_common import (
+    get_read_channel_id,
+    get_status_channel_id,
+    load_config,
+)
 from council_orchestrator import run_council_pipeline
 
 logging.basicConfig(
@@ -49,12 +53,9 @@ async def fetch_channel_logs(
     return "\n".join(lines)
 
 
-async def fetch_logs_from_config(
-    config: dict,
-    channel_id: int | None = None,
-) -> str:
+async def fetch_logs_from_config(config: dict) -> str:
     """Connect briefly to Discord, scrape logs, and disconnect."""
-    target_id = channel_id or int(config["discord"]["channel_id"])
+    target_id = get_read_channel_id(config)
     days = int(config.get("council", {}).get("log_days", 7))
     token = config["discord"]["bot_token"]
 
@@ -76,14 +77,86 @@ async def fetch_logs_from_config(
     return raw_logs.get("text", "No user messages were found in the configured window.")
 
 
+def format_council_success(result: dict) -> str:
+    return (
+        "The High Council has convened.\n"
+        f"Brief source: `{result.get('brief_source', 'unknown')}`\n"
+        f"Transcript: `{result.get('transcript_path', 'pending')}`"
+    )
+
+
+def format_council_failure(exc: Exception) -> str:
+    return (
+        "The council could not complete its session. Check the service logs.\n"
+        f"Error: {exc}"
+    )
+
+
+async def post_bot_message(config: dict, channel_id: int, content: str) -> None:
+    """Connect briefly to Discord, post one message, and disconnect."""
+    token = config["discord"]["bot_token"]
+
+    class Poster(discord.Client):
+        async def on_ready(self) -> None:
+            channel = self.get_channel(channel_id)
+            if channel is None:
+                channel = await self.fetch_channel(channel_id)
+            if not isinstance(channel, discord.TextChannel):
+                raise RuntimeError(f"Channel {channel_id} is not a text channel.")
+            await channel.send(content)
+            await self.close()
+
+    client = Poster(intents=discord.Intents.default())
+    await client.start(token)
+
+
+async def notify_council_status(
+    config: dict,
+    *,
+    success: bool,
+    result: dict | None = None,
+    error: Exception | None = None,
+    fallback_status_channel_id: int | None = None,
+) -> None:
+    """Post a completion message to the status channel, or a manual-run fallback."""
+    channel_id = get_status_channel_id(config) or fallback_status_channel_id
+    if channel_id is None:
+        return
+
+    if success:
+        content = format_council_success(result or {})
+    else:
+        content = format_council_failure(error or RuntimeError("unknown error"))
+
+    await post_bot_message(config, channel_id, content)
+
+
 async def run_council_from_config(
     config: dict,
-    channel_id: int | None = None,
+    *,
+    fallback_status_channel_id: int | None = None,
 ) -> dict:
     """Fetch Discord logs and run the full council pipeline."""
-    logger.info("Fetching logs from channel %s", channel_id or config["discord"]["channel_id"])
-    raw_logs = await fetch_logs_from_config(config, channel_id=channel_id)
-    return await asyncio.to_thread(run_council_pipeline, raw_logs, config)
+    read_id = get_read_channel_id(config)
+    logger.info("Fetching logs from channel %s", read_id)
+    raw_logs = await fetch_logs_from_config(config)
+    try:
+        result = await asyncio.to_thread(run_council_pipeline, raw_logs, config)
+        await notify_council_status(
+            config,
+            success=True,
+            result=result,
+            fallback_status_channel_id=fallback_status_channel_id,
+        )
+        return result
+    except Exception as exc:
+        await notify_council_status(
+            config,
+            success=False,
+            error=exc,
+            fallback_status_channel_id=fallback_status_channel_id,
+        )
+        raise
 
 
 class CouncilService(discord.Client):
@@ -109,18 +182,12 @@ class CouncilService(discord.Client):
 
         await message.channel.send("Summoning the High Council… fetching logs.")
         try:
-            result = await run_council_from_config(self.config)
-            await message.channel.send(
-                "The High Council has convened.\n"
-                f"Brief source: `{result.get('brief_source', 'unknown')}`\n"
-                f"Transcript: `{result.get('transcript_path', 'pending')}`"
+            await run_council_from_config(
+                self.config,
+                fallback_status_channel_id=message.channel.id,
             )
-        except Exception as exc:
+        except Exception:
             logger.exception("Council pipeline failed.")
-            await message.channel.send(
-                "The council could not complete its session. Check the service logs.\n"
-                f"Error: {exc}"
-            )
 
 
 def main() -> None:

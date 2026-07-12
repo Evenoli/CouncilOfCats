@@ -44,15 +44,26 @@ def check() -> list[str]:
 
     discord = config.get("discord", {})
     token = os.environ.get("DISCORD_BOT_TOKEN", "") or discord.get("bot_token", "")
-    channel = os.environ.get("DISCORD_CHANNEL_ID", "") or discord.get("channel_id", "")
+    read_channel = (
+        os.environ.get("DISCORD_READ_CHANNEL_ID", "")
+        or os.environ.get("DISCORD_CHANNEL_ID", "")
+        or discord.get("read_channel_id", "")
+        or discord.get("channel_id", "")
+    )
+    status_channel = (
+        os.environ.get("DISCORD_STATUS_CHANNEL_ID", "")
+        or discord.get("status_channel_id", "")
+    )
     admins = os.environ.get("DISCORD_ADMIN_USER_IDS", "") or ",".join(
         str(x) for x in discord.get("admin_user_ids", [])
     )
 
     if not token or is_placeholder(str(token)):
         issues.append("DISCORD_BOT_TOKEN not set")
-    if not channel or is_placeholder(str(channel)):
-        issues.append("DISCORD_CHANNEL_ID not set")
+    if not read_channel or is_placeholder(str(read_channel)):
+        issues.append("DISCORD_READ_CHANNEL_ID not set")
+    if not status_channel or is_placeholder(str(status_channel)):
+        issues.append("DISCORD_STATUS_CHANNEL_ID not set (required for scheduled runs)")
     if not admins.strip() or is_placeholder(admins):
         issues.append("DISCORD_ADMIN_USER_IDS not set")
 

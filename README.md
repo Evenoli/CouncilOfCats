@@ -79,7 +79,8 @@ nano council.env
 |---|---|
 | `LLM_API_KEY` | Gemini API key |
 | `DISCORD_BOT_TOKEN` | Discord bot token |
-| `DISCORD_CHANNEL_ID` | Source channel for log scraping |
+| `DISCORD_READ_CHANNEL_ID` | Channel to scrape user messages from (7-day window) |
+| `DISCORD_STATUS_CHANNEL_ID` | Channel for bot completion messages (scheduled runs; also used for manual runs when set) |
 | `DISCORD_ADMIN_USER_IDS` | Comma-separated user IDs allowed to run `!council run` |
 | `WEBHOOK_CHAIR_CAT` | Chair Cat webhook URL |
 | `WEBHOOK_BARNABY` | Barnaby webhook URL |
@@ -184,18 +185,12 @@ Artifacts:
 
 ## 4. Scheduled runs (cron / systemd — no `!council run` needed)
 
-The Discord bot is only needed for **manual** triggers. For weekly automation, use `scripts/run_council_scheduled.py` — it connects briefly, scrapes logs from `DISCORD_CHANNEL_ID`, runs the pipeline, and posts via webhooks. **No message is posted to the source channel.**
+The Discord bot is only needed for **manual** triggers. For weekly automation, use `scripts/run_council_scheduled.py` — it connects briefly, scrapes logs from `DISCORD_READ_CHANNEL_ID`, runs the pipeline, posts cat dialogue via webhooks, and posts a completion message to `DISCORD_STATUS_CHANNEL_ID`.
 
 ```bash
 cd /root/CouncilOfCats
 set -a && source council.env && set +a
 .venv/bin/python scripts/run_council_scheduled.py
-```
-
-Override the source channel for one run:
-
-```bash
-.venv/bin/python scripts/run_council_scheduled.py --channel-id 123456789012345678
 ```
 
 **systemd timer** (after `vps_setup.sh`, edit paths in templates first):
@@ -216,7 +211,9 @@ systemctl list-timers council.timer
 0 18 * * 0 cd /root/CouncilOfCats && set -a && source council.env && set +a && .venv/bin/python scripts/run_council_scheduled.py >> research/cron.log 2>&1
 ```
 
-Cat dialogue still goes to the **webhook channels** configured in `council.env`, not to the scrape source channel.
+Cat dialogue still goes to the **webhook channels** configured in `council.env`. Completion summaries go to the **status channel**.
+
+`DISCORD_CHANNEL_ID` is still accepted as a legacy alias for `DISCORD_READ_CHANNEL_ID`.
 
 ---
 

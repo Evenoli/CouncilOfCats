@@ -49,8 +49,12 @@ def apply_env_secrets(config: dict[str, Any]) -> dict[str, Any]:
     discord = config.setdefault("discord", {})
     if os.environ.get("DISCORD_BOT_TOKEN"):
         discord["bot_token"] = os.environ["DISCORD_BOT_TOKEN"]
-    if os.environ.get("DISCORD_CHANNEL_ID"):
-        discord["channel_id"] = os.environ["DISCORD_CHANNEL_ID"]
+    if os.environ.get("DISCORD_READ_CHANNEL_ID"):
+        discord["read_channel_id"] = os.environ["DISCORD_READ_CHANNEL_ID"]
+    elif os.environ.get("DISCORD_CHANNEL_ID"):
+        discord["read_channel_id"] = os.environ["DISCORD_CHANNEL_ID"]
+    if os.environ.get("DISCORD_STATUS_CHANNEL_ID"):
+        discord["status_channel_id"] = os.environ["DISCORD_STATUS_CHANNEL_ID"]
     admin_ids = os.environ.get("DISCORD_ADMIN_USER_IDS", "").strip()
     if admin_ids:
         discord["admin_user_ids"] = [
@@ -75,6 +79,36 @@ def load_config(config_path: Path | None = None) -> dict[str, Any]:
     with path.open(encoding="utf-8") as handle:
         config = json.load(handle)
     return apply_env_secrets(config)
+
+
+def _discord_channel_int(
+    config: dict[str, Any],
+    key: str,
+    *legacy_keys: str,
+) -> int | None:
+    discord = config.get("discord", {})
+    raw = discord.get(key)
+    if raw is None:
+        for legacy_key in legacy_keys:
+            raw = discord.get(legacy_key)
+            if raw is not None:
+                break
+    if raw is None:
+        return None
+    return int(raw)
+
+
+def get_read_channel_id(config: dict[str, Any]) -> int:
+    """Channel to scrape user messages from (7-day window)."""
+    channel_id = _discord_channel_int(config, "read_channel_id", "channel_id")
+    if channel_id is None:
+        raise KeyError("discord.read_channel_id is not configured")
+    return channel_id
+
+
+def get_status_channel_id(config: dict[str, Any]) -> int | None:
+    """Channel for bot completion messages (scheduled runs; optional for manual)."""
+    return _discord_channel_int(config, "status_channel_id")
 
 
 def get_debate_cats(config: dict[str, Any]) -> list[str]:

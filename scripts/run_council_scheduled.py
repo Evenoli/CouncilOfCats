@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Run the council on a schedule — no Discord trigger message required.
 
-Fetches logs from the configured channel (or --channel-id), runs the pipeline,
-and posts cat lines via webhooks. Safe to call from cron or systemd timer.
+Fetches logs from the configured read channel, runs the pipeline, posts cat
+lines via webhooks, and posts a completion message to the status channel.
+Safe to call from cron or systemd timer.
 
 Example crontab (Sundays at 18:00 UTC):
   0 18 * * 0 cd /root/CouncilOfCats && set -a && source council.env && set +a && .venv/bin/python scripts/run_council_scheduled.py >> research/cron.log 2>&1
@@ -18,7 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from council_common import load_config
+from council_common import get_status_channel_id, load_config
 from council_service import run_council_from_config
 
 logging.basicConfig(
@@ -33,11 +34,6 @@ def parse_args() -> argparse.Namespace:
         description="Run Council of Cats without a Discord trigger message.",
     )
     parser.add_argument(
-        "--channel-id",
-        type=int,
-        help="Override discord.channel_id for this run (source logs channel).",
-    )
-    parser.add_argument(
         "--config",
         type=Path,
         help="Path to config.json (default: project config.json).",
@@ -48,7 +44,15 @@ def parse_args() -> argparse.Namespace:
 async def main() -> None:
     args = parse_args()
     config = load_config(args.config)
-    result = await run_council_from_config(config, channel_id=args.channel_id)
+
+    if get_status_channel_id(config) is None:
+        logger.error(
+            "DISCORD_STATUS_CHANNEL_ID / discord.status_channel_id is required "
+            "for scheduled runs (completion messages)."
+        )
+        sys.exit(1)
+
+    result = await run_council_from_config(config)
     logger.info("Council run complete: %s", result)
 
 
