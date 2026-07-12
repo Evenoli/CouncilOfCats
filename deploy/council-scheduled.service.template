@@ -1,0 +1,11 @@
+[Unit]
+Description=Council of Cats scheduled run
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@SERVICE_USER@
+WorkingDirectory=@INSTALL_DIR@
+EnvironmentFile=@INSTALL_DIR@/council.env
+ExecStart=@INSTALL_DIR@/.venv/bin/python @INSTALL_DIR@/scripts/run_council_scheduled.py

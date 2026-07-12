@@ -49,6 +49,43 @@ async def fetch_channel_logs(
     return "\n".join(lines)
 
 
+async def fetch_logs_from_config(
+    config: dict,
+    channel_id: int | None = None,
+) -> str:
+    """Connect briefly to Discord, scrape logs, and disconnect."""
+    target_id = channel_id or int(config["discord"]["channel_id"])
+    days = int(config.get("council", {}).get("log_days", 7))
+    token = config["discord"]["bot_token"]
+
+    scrape_intents = discord.Intents.default()
+    raw_logs: dict[str, str] = {}
+
+    class LogFetcher(discord.Client):
+        async def on_ready(self) -> None:
+            channel = self.get_channel(target_id)
+            if channel is None:
+                channel = await self.fetch_channel(target_id)
+            if not isinstance(channel, discord.TextChannel):
+                raise RuntimeError(f"Channel {target_id} is not a text channel.")
+            raw_logs["text"] = await fetch_channel_logs(channel, days)
+            await self.close()
+
+    client = LogFetcher(intents=scrape_intents)
+    await client.start(token)
+    return raw_logs.get("text", "No user messages were found in the configured window.")
+
+
+async def run_council_from_config(
+    config: dict,
+    channel_id: int | None = None,
+) -> dict:
+    """Fetch Discord logs and run the full council pipeline."""
+    logger.info("Fetching logs from channel %s", channel_id or config["discord"]["channel_id"])
+    raw_logs = await fetch_logs_from_config(config, channel_id=channel_id)
+    return await asyncio.to_thread(run_council_pipeline, raw_logs, config)
+
+
 class CouncilService(discord.Client):
     def __init__(self, config: dict) -> None:
         super().__init__(intents=intents)
@@ -70,20 +107,9 @@ class CouncilService(discord.Client):
             await message.channel.send("You are not authorised to run the council.")
             return
 
-        target_channel_id = int(self.config["discord"]["channel_id"])
-        channel = self.get_channel(target_channel_id)
-        if channel is None:
-            channel = await self.fetch_channel(target_channel_id)
-        if not isinstance(channel, discord.TextChannel):
-            await message.channel.send("Configured council channel was not found.")
-            return
-
         await message.channel.send("Summoning the High Council… fetching logs.")
-        days = int(self.config.get("council", {}).get("log_days", 7))
-        raw_logs = await fetch_channel_logs(channel, days)
-
         try:
-            result = await asyncio.to_thread(run_council_pipeline, raw_logs, self.config)
+            result = await run_council_from_config(self.config)
             await message.channel.send(
                 "The High Council has convened.\n"
                 f"Brief source: `{result.get('brief_source', 'unknown')}`\n"

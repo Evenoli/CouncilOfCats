@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly Council of Cats run
+
+[Timer]
+# Sundays at 18:00 UTC — edit OnCalendar to taste
+OnCalendar=Sun *-*-* 18:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

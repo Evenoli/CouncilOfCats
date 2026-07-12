@@ -2,6 +2,8 @@
 
 A weekly Discord simulation where cat personas debate your community's drama. Everything runs on a **single VPS**: a Discord bot scrapes channel logs, Gemini generates the council debate, and an optional [Hermes Agent](https://hermes-agent.nousresearch.com/) layer handles pre-council analysis and post-council persona refinement.
 
+Created as a stupid experiment to make use of Hermes agent for research while fullfilling a particular request to "unleash a council of cats upon the Discord". 
+
 ## Architecture
 
 ```text
@@ -180,7 +182,45 @@ Artifacts:
 
 ---
 
-## 4. Manual test (no Discord)
+## 4. Scheduled runs (cron / systemd — no `!council run` needed)
+
+The Discord bot is only needed for **manual** triggers. For weekly automation, use `scripts/run_council_scheduled.py` — it connects briefly, scrapes logs from `DISCORD_CHANNEL_ID`, runs the pipeline, and posts via webhooks. **No message is posted to the source channel.**
+
+```bash
+cd /root/CouncilOfCats
+set -a && source council.env && set +a
+.venv/bin/python scripts/run_council_scheduled.py
+```
+
+Override the source channel for one run:
+
+```bash
+.venv/bin/python scripts/run_council_scheduled.py --channel-id 123456789012345678
+```
+
+**systemd timer** (after `vps_setup.sh`, edit paths in templates first):
+
+```bash
+sed -e 's|@INSTALL_DIR@|/root/CouncilOfCats|g' -e 's|@SERVICE_USER@|root|g' \
+  deploy/council-scheduled.service.template | sudo tee /etc/systemd/system/council-scheduled.service
+sed -e 's|@INSTALL_DIR@|/root/CouncilOfCats|g' \
+  deploy/council.timer.template | sudo tee /etc/systemd/system/council.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now council.timer
+systemctl list-timers council.timer
+```
+
+**crontab** (Sundays 18:00 UTC):
+
+```cron
+0 18 * * 0 cd /root/CouncilOfCats && set -a && source council.env && set +a && .venv/bin/python scripts/run_council_scheduled.py >> research/cron.log 2>&1
+```
+
+Cat dialogue still goes to the **webhook channels** configured in `council.env`, not to the scrape source channel.
+
+---
+
+## 5. Manual test (no Discord)
 
 ```bash
 python scripts/run_council_test.py
@@ -191,7 +231,7 @@ This runs the full pipeline including webhooks — use a test Discord server or 
 
 ---
 
-## 5. systemd service
+## 6. systemd service
 
 `/etc/systemd/system/council.service`:
 
@@ -220,7 +260,7 @@ sudo journalctl -u council -f
 
 ---
 
-## 6. Migrating to local inference
+## 7. Migrating to local inference
 
 To run the debate loop on a Windows PC with Ollama again, replace the `llm` block with legacy Ollama config and split the gateway:
 
@@ -236,7 +276,7 @@ You would then reintroduce a separate HTTP receiver or run `scripts/run_council_
 
 ---
 
-## 7. Prompt reference
+## 8. Prompt reference
 
 | File | Used by |
 |---|---|
@@ -254,7 +294,7 @@ You would then reintroduce a separate HTTP receiver or run `scripts/run_council_
 
 ---
 
-## 8. Troubleshooting
+## 9. Troubleshooting
 
 | Symptom | Check |
 |---|---|
@@ -267,7 +307,7 @@ You would then reintroduce a separate HTTP receiver or run `scripts/run_council_
 
 ---
 
-## 9. Security notes
+## 10. Security notes
 
 - Never commit `config.json` or `council.env` (tokens, webhooks, API keys).
 - Prefer `council.env` + `LLM_API_KEY` over hardcoding secrets in `config.json`.
