@@ -16,7 +16,7 @@ Everything runs on a **single Linux VPS**:
 
 1. **Council Service (`council_service.py`):**
    - Discord bot running 24/7 via `discord.py`.
-   - Listens for `!council run` (admin-only).
+   - Listens for `!council run` (admins anytime; others after cooldown).
    - Fetches and sanitizes the past 7 days of channel logs.
    - Calls `council_orchestrator.run_council_pipeline()` in-process (no HTTP tunnel).
 
@@ -38,7 +38,7 @@ Hermes and OpenClaw may coexist on the VPS if they use separate Discord bots/cha
 
 ### Step 1: Log Scraper (Discord — `council_service.py`)
 - Connects to Discord using `discord.py` (v2.0+).
-- Triggered manually by an admin via `!council run`.
+- Triggered manually via `!council run` (admins anytime; other users after `manual_cooldown_days`).
 - Grabs the past 7 days of messages in the target channel.
 - **Sanitisation:** Strips system messages, bot messages, and empty content; formats as `[Username]: Message content`.
 - Passes `raw_logs` directly to the orchestrator.
@@ -54,11 +54,12 @@ The `council-chronicler` Hermes profile receives raw logs and produces the counc
 ### Step 3: The Council Debate Loop
 Hardcoded deterministic orchestrator. Cat system prompts loaded from `personas/{cat}/`.
 
-- **Turn 1:** Chair Cat introduction
-- **Turns 2–7:** Round-robin debate (2 rounds): Barnaby → Cleo → Kiwi
-- **Turn 8:** Chair Cat closing rulings
+- **Main session:** Chair Cat introduction → round-robin debate (2 rounds) → …
+- **Extra agenda (optional):** up to `submissions_per_run` FIFO items from `research/submissions.json`. Per item: Chair introduces topic → one cat round → Chair gavel (`CONTINUE: yes/no`) → optional second cat round (capped by `max_extra_rounds`).
+- **Close:** Chair Cat closing rulings over the full transcript.
+- Discussed submissions are removed only after a successful pipeline run; newer queue entries wait for a later council.
 
-Debate order is configured in `config.json` → `cats.debate_order`.
+Debate order is configured in `config.json` → `cats.debate_order`. Community items arrive via Discord `!council submit …`.
 
 ### Step 4: Post-Council Review (Hermes)
 `council-curator` reviews the transcript and refines personas.

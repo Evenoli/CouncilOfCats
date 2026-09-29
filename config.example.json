@@ -32,7 +32,11 @@
 
   "council": {
     "log_days": 7,
-    "webhook_delay_seconds": 2
+    "webhook_delay_seconds": 2,
+    "manual_cooldown_days": 6,
+    "submissions_per_run": 4,
+    "max_extra_rounds": 2,
+    "max_submission_chars": 500
   },
 
   "hermes": {

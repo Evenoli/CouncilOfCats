@@ -9,6 +9,9 @@ from datetime import datetime, timedelta, timezone
 import discord
 
 from council_common import (
+    add_submission,
+    evaluate_manual_trigger,
+    format_submissions_status,
     get_read_channel_id,
     get_status_channel_id,
     load_config,
@@ -22,6 +25,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 TRIGGER_COMMAND = "!council run"
+SUBMIT_PREFIX = "!council submit"
+LIST_COMMAND = "!council submissions"
 intents = discord.Intents.default()
 intents.message_content = True
 
@@ -78,10 +83,13 @@ async def fetch_logs_from_config(config: dict) -> str:
 
 
 def format_council_success(result: dict) -> str:
+    discussed = result.get("submissions_discussed", 0)
+    remaining = result.get("submissions_remaining", 0)
     return (
         "The High Council has convened.\n"
         f"Brief source: `{result.get('brief_source', 'unknown')}`\n"
-        f"Transcript: `{result.get('transcript_path', 'pending')}`"
+        f"Transcript: `{result.get('transcript_path', 'pending')}`\n"
+        f"Agenda items discussed: {discussed} (remaining queued: {remaining})"
     )
 
 
@@ -172,22 +180,38 @@ class CouncilService(discord.Client):
             return
 
         content = message.content.strip()
-        if content != TRIGGER_COMMAND:
+        lowered = content.lower()
+
+        if lowered == LIST_COMMAND or lowered == "!council queue":
+            await message.channel.send(format_submissions_status(self.config))
             return
 
-        admin_ids = {str(user_id) for user_id in self.config["discord"]["admin_user_ids"]}
-        if str(message.author.id) not in admin_ids:
-            await message.channel.send("You are not authorised to run the council.")
+        if lowered == TRIGGER_COMMAND:
+            allowed, denial = evaluate_manual_trigger(self.config, message.author.id)
+            if not allowed:
+                await message.channel.send(denial)
+                return
+
+            await message.channel.send("Summoning the High Council… fetching logs.")
+            try:
+                await run_council_from_config(
+                    self.config,
+                    fallback_status_channel_id=message.channel.id,
+                )
+            except Exception:
+                logger.exception("Council pipeline failed.")
             return
 
-        await message.channel.send("Summoning the High Council… fetching logs.")
-        try:
-            await run_council_from_config(
-                self.config,
-                fallback_status_channel_id=message.channel.id,
+        if lowered == SUBMIT_PREFIX or lowered.startswith(SUBMIT_PREFIX + " "):
+            topic = content[len(SUBMIT_PREFIX) :].strip()
+            _ok, reply, _item = add_submission(
+                topic,
+                submitted_by=message.author.display_name,
+                submitted_by_id=message.author.id,
+                config=self.config,
             )
-        except Exception:
-            logger.exception("Council pipeline failed.")
+            await message.channel.send(reply)
+            return
 
 
 def main() -> None:

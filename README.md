@@ -81,7 +81,7 @@ nano council.env
 | `DISCORD_BOT_TOKEN` | Discord bot token |
 | `DISCORD_READ_CHANNEL_ID` | Channel to scrape user messages from (7-day window) |
 | `DISCORD_STATUS_CHANNEL_ID` | Channel for bot completion messages (scheduled runs; also used for manual runs when set) |
-| `DISCORD_ADMIN_USER_IDS` | Comma-separated user IDs allowed to run `!council run` |
+| `DISCORD_ADMIN_USER_IDS` | Comma-separated user IDs who may run `!council run` at any time |
 | `WEBHOOK_CHAIR_CAT` | Chair Cat webhook URL |
 | `WEBHOOK_BARNABY` | Barnaby webhook URL |
 | `WEBHOOK_CLEO` | Cleo webhook URL |
@@ -117,13 +117,23 @@ Edit `config.json` for non-secret settings (or use env vars above for secrets):
 |---|---|
 | `llm.model` | e.g. `gemini-2.5-flash` |
 | `cats.debate_order` | Round-robin council members |
+| `council.manual_cooldown_days` | Days non-admins must wait between manual runs (default `6`) |
+| `council.submissions_per_run` | Max queued agenda items discussed per run (default `4`, FIFO) |
+| `council.max_extra_rounds` | Max cat rounds per agenda item, including the first (default `2`) |
+| `council.max_submission_chars` | Max length for `!council submit` text (default `500`) |
 | `hermes.enabled` | Set `false` to skip Hermes (LLM fallback for summary) |
 
-Trigger from Discord:
+Discord commands:
 
 ```text
 !council run
+!council submit why did the humans buy a second laser pointer
+!council submissions
 ```
+
+Admins in `DISCORD_ADMIN_USER_IDS` / `admin_user_ids` may trigger `!council run` at any time. Anyone else may trigger only if at least `manual_cooldown_days` have passed since the last successful run (manual or scheduled).
+
+Anyone may queue agenda items with `!council submit …`. The queue is uncapped; each successful run discusses up to `submissions_per_run` oldest items, then clears only those. After the first cat round on an item, the Chair gavels `CONTINUE: yes/no` and may open one further round.
 
 ---
 
@@ -165,20 +175,22 @@ Recommended:
 
 ## 3. Pipeline walkthrough
 
-1. **Discord** — `!council run` fetches 7 days of messages, sanitizes to `[Username]: message`.
+1. **Discord** — `!council run` fetches 7 days of messages, sanitizes to `[Username]: message`. Loads up to `submissions_per_run` oldest queued agenda items.
 2. **Pre-council** — chronicler returns JSON: summary, memory callbacks, memory updates.
-3. **Debate** — 8 deterministic turns via Gemini:
+3. **Debate** — deterministic turns via Gemini:
    - Chair Cat intro
    - Barnaby → Cleo → Kiwi (×2 rounds)
+   - For each queued agenda item (up to 4): Chair introduces topic → one cat round → Chair gavel (`CONTINUE: yes/no`) → optional second cat round
    - Chair Cat closing rulings
 4. **Discord** — each turn posts to that cat's webhook with a 2-second delay.
-5. **Post-council** — curator reviews transcript, patches `council-voice.md`, writes optional `SOUL.md` candidates to `research/persona-patches/`.
+5. **Post-council** — curator reviews transcript, patches `council-voice.md`, writes optional `SOUL.md` candidates to `research/persona-patches/`. Discussed submissions are cleared from the queue only after a successful run.
 
 Artifacts:
 - `research/transcripts/` — weekly transcripts
 - `research/reviews/` — JSON review reports
 - `research/persona-patches/` — proposed SOUL changes for human review
 - `research/memory/council_memory.md` — cross-week memory
+- `research/submissions.json` — FIFO community agenda queue
 - `personas/*/council-voice.md` — evolving voice guidance
 
 ---
@@ -300,7 +312,7 @@ You would then reintroduce a separate HTTP receiver or run `scripts/run_council_
 | Hermes skipped | `hermes.enabled: false` or `hermes` not on PATH |
 | Empty council output | Model name correct? Check service logs |
 | Webhooks fail | URLs valid? Messages under Discord 2000-char limit? |
-| Unauthorized trigger | Your user ID in `admin_user_ids`? |
+| Manual trigger denied (cooldown) | Wait for `manual_cooldown_days`, or use an admin user ID |
 
 ---
 
@@ -308,6 +320,6 @@ You would then reintroduce a separate HTTP receiver or run `scripts/run_council_
 
 - Never commit `config.json` or `council.env` (tokens, webhooks, API keys).
 - Prefer `council.env` + `LLM_API_KEY` over hardcoding secrets in `config.json`.
-- Restrict `!council run` to `admin_user_ids`.
+- Admins may always run `!council run`; others are limited by `manual_cooldown_days`.
 - Review `research/persona-patches/` before applying any `SOUL.md` changes.
 - Version-control `personas/` and inspect `git diff` after weekly reviews.

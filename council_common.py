@@ -7,7 +7,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +22,17 @@ TRANSCRIPTS_DIR = RESEARCH_DIR / "transcripts"
 REVIEWS_DIR = RESEARCH_DIR / "reviews"
 PATCHES_DIR = RESEARCH_DIR / "persona-patches"
 MEMORY_FILE = RESEARCH_DIR / "memory" / "council_memory.md"
+LAST_RUN_FILE = RESEARCH_DIR / "last_run.json"
+SUBMISSIONS_FILE = RESEARCH_DIR / "submissions.json"
+TRANSCRIPT_STAMP_RE = re.compile(r"^(\d{8}T\d{6}Z)\.md$")
+CONTINUE_MARKER_RE = re.compile(
+    r"^\s*CONTINUE:\s*(yes|no)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+DEFAULT_MANUAL_COOLDOWN_DAYS = 6
+DEFAULT_SUBMISSIONS_PER_RUN = 4
+DEFAULT_MAX_EXTRA_ROUNDS = 2
+DEFAULT_MAX_SUBMISSION_CHARS = 500
 
 DEFAULT_DEBATE_CATS = ["barnaby", "cleo", "kiwi"]
 DEFAULT_DISPLAY_NAMES = {
@@ -258,6 +269,282 @@ def ensure_research_dirs() -> None:
         MEMORY_FILE.parent,
     ):
         path.mkdir(parents=True, exist_ok=True)
+
+
+def get_manual_cooldown_days(config: dict[str, Any]) -> float:
+    council = config.get("council", {})
+    raw = council.get("manual_cooldown_days", DEFAULT_MANUAL_COOLDOWN_DAYS)
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return float(DEFAULT_MANUAL_COOLDOWN_DAYS)
+
+
+def _parse_last_run_payload(raw: str) -> datetime | None:
+    raw = raw.strip()
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict):
+        stamp = payload.get("completed_at")
+        if isinstance(stamp, str) and stamp.strip():
+            return datetime.fromisoformat(stamp.strip().replace("Z", "+00:00"))
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _last_run_from_transcripts() -> datetime | None:
+    if not TRANSCRIPTS_DIR.exists():
+        return None
+    latest: datetime | None = None
+    for path in TRANSCRIPTS_DIR.glob("*.md"):
+        match = TRANSCRIPT_STAMP_RE.match(path.name)
+        if not match:
+            continue
+        try:
+            stamp = datetime.strptime(match.group(1), "%Y%m%dT%H%M%SZ").replace(
+                tzinfo=timezone.utc
+            )
+        except ValueError:
+            continue
+        if latest is None or stamp > latest:
+            latest = stamp
+    return latest
+
+
+def get_last_run_at() -> datetime | None:
+    """Return the timestamp of the most recent successful council run."""
+    if LAST_RUN_FILE.exists():
+        parsed = _parse_last_run_payload(LAST_RUN_FILE.read_text(encoding="utf-8"))
+        if parsed is not None:
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+    return _last_run_from_transcripts()
+
+
+def record_council_run(completed_at: datetime | None = None) -> None:
+    """Persist completion time so manual cooldown can be enforced."""
+    ensure_research_dirs()
+    stamp = completed_at or datetime.now(timezone.utc)
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    stamp = stamp.astimezone(timezone.utc)
+    payload = {"completed_at": stamp.isoformat().replace("+00:00", "Z")}
+    LAST_RUN_FILE.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+
+def evaluate_manual_trigger(
+    config: dict[str, Any],
+    user_id: str | int,
+) -> tuple[bool, str]:
+    """Decide whether a Discord user may start a manual council run.
+
+    Admins may always trigger. Everyone else may trigger only when no successful
+    run has completed within ``council.manual_cooldown_days`` (default 6).
+    """
+    admin_ids = {
+        str(item) for item in config.get("discord", {}).get("admin_user_ids", [])
+    }
+    if str(user_id) in admin_ids:
+        return True, ""
+
+    cooldown_days = get_manual_cooldown_days(config)
+    last_run = get_last_run_at()
+    if last_run is None:
+        return True, ""
+
+    now = datetime.now(timezone.utc)
+    elapsed = now - last_run
+    cooldown = timedelta(days=cooldown_days)
+    if elapsed >= cooldown:
+        return True, ""
+
+    remaining = cooldown - elapsed
+    remaining_hours = max(1, int(remaining.total_seconds() // 3600) + 1)
+    if remaining_hours >= 48:
+        remaining_text = f"about {remaining_hours // 24} days"
+    else:
+        remaining_text = f"about {remaining_hours} hours"
+    return (
+        False,
+        (
+            "The High Council needs rest between sessions. "
+            f"Anyone may summon them again in {remaining_text} "
+            f"(at least {cooldown_days:g} days since the last run). "
+            "Authorised keepers can still summon them at any time."
+        ),
+    )
+
+
+def get_submissions_per_run(config: dict[str, Any]) -> int:
+    council = config.get("council", {})
+    raw = council.get("submissions_per_run", DEFAULT_SUBMISSIONS_PER_RUN)
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return DEFAULT_SUBMISSIONS_PER_RUN
+
+
+def get_max_extra_rounds(config: dict[str, Any]) -> int:
+    """Total cat rounds allowed per extra topic (1 required + optional continuations)."""
+    council = config.get("council", {})
+    raw = council.get("max_extra_rounds", DEFAULT_MAX_EXTRA_ROUNDS)
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_EXTRA_ROUNDS
+
+
+def get_max_submission_chars(config: dict[str, Any]) -> int:
+    council = config.get("council", {})
+    raw = council.get("max_submission_chars", DEFAULT_MAX_SUBMISSION_CHARS)
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_SUBMISSION_CHARS
+
+
+def load_submissions() -> list[dict[str, Any]]:
+    ensure_research_dirs()
+    if not SUBMISSIONS_FILE.exists():
+        return []
+    try:
+        payload = json.loads(SUBMISSIONS_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    items = payload.get("submissions") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        return []
+    return [item for item in items if isinstance(item, dict)]
+
+
+def save_submissions(items: list[dict[str, Any]]) -> None:
+    ensure_research_dirs()
+    payload = {"submissions": items}
+    SUBMISSIONS_FILE.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
+def peek_submissions_for_run(limit: int) -> list[dict[str, Any]]:
+    """Return the oldest pending submissions without removing them."""
+    if limit <= 0:
+        return []
+    return load_submissions()[:limit]
+
+
+def clear_submissions_by_ids(submission_ids: list[str]) -> int:
+    """Remove consumed submissions from the FIFO queue. Returns how many were removed."""
+    if not submission_ids:
+        return 0
+    remove = {str(item) for item in submission_ids}
+    remaining: list[dict[str, Any]] = []
+    removed = 0
+    for item in load_submissions():
+        item_id = str(item.get("id", ""))
+        if item_id and item_id in remove:
+            removed += 1
+            continue
+        remaining.append(item)
+    save_submissions(remaining)
+    return removed
+
+
+def add_submission(
+    text: str,
+    *,
+    submitted_by: str,
+    submitted_by_id: str | int,
+    config: dict[str, Any] | None = None,
+) -> tuple[bool, str, dict[str, Any] | None]:
+    """Append a community agenda item. Returns (ok, message, item)."""
+    cleaned = " ".join(text.split()).strip()
+    if not cleaned:
+        return False, "Submission cannot be empty. Try `!council submit your topic here`.", None
+
+    max_chars = get_max_submission_chars(config or {})
+    if len(cleaned) > max_chars:
+        return (
+            False,
+            f"Submission is too long ({len(cleaned)} chars). Keep it under {max_chars}.",
+            None,
+        )
+
+    item = {
+        "id": timestamp_slug(),
+        "text": cleaned,
+        "submitted_by": submitted_by.strip() or "unknown",
+        "submitted_by_id": str(submitted_by_id),
+        "submitted_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    items = load_submissions()
+    # Avoid colliding ids if two submits land in the same second.
+    existing_ids = {str(existing.get("id", "")) for existing in items}
+    if item["id"] in existing_ids:
+        item["id"] = f"{item['id']}-{len(items) + 1}"
+
+    items.append(item)
+    save_submissions(items)
+    position = len(items)
+    return (
+        True,
+        (
+            f"Agenda item queued in position {position}: {cleaned}"
+        ),
+        item,
+    )
+
+
+def parse_chair_continue(raw_text: str) -> tuple[bool, str]:
+    """Extract CONTINUE: yes|no from the chair gavel turn.
+
+    Returns (should_continue, discord_facing_text). Missing/invalid markers default
+    to closing the topic so cost stays bounded.
+    """
+    text = raw_text.strip()
+    match = CONTINUE_MARKER_RE.search(text)
+    if not match:
+        cleaned = CONTINUE_MARKER_RE.sub("", text).strip()
+        return False, cleaned or text
+
+    should_continue = match.group(1).lower() == "yes"
+    cleaned = CONTINUE_MARKER_RE.sub("", text).strip()
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return should_continue, cleaned or text
+
+
+def format_submissions_status(
+    config: dict[str, Any] | None = None,
+    *,
+    preview_limit: int = 8,
+) -> str:
+    items = load_submissions()
+    per_run = get_submissions_per_run(config or {})
+    if not items:
+        return (
+            "No agenda submissions pending. "
+            "Add one with `!council submit your topic here`."
+        )
+
+    lines = [
+        f"{len(items)} pending submission(s); "
+        f"next council will discuss up to {per_run} (oldest first)."
+    ]
+    for index, item in enumerate(items[:preview_limit], start=1):
+        submitter = item.get("submitted_by") or "unknown"
+        text = item.get("text") or ""
+        lines.append(f"{index}. [{submitter}] {text}")
+    remaining = len(items) - preview_limit
+    if remaining > 0:
+        lines.append(f"…and {remaining} more.")
+    return "\n".join(lines)
 
 
 def load_council_memory() -> str:
