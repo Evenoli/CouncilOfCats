@@ -585,10 +585,5 @@ def extract_cat_lines(transcript: str, display_name: str) -> str:
     return "\n".join(line.strip() for line in matches)
 
 
-def get_cat_profiles(config: dict[str, Any]) -> list[str]:
-    hermes = config.get("hermes", {})
-    profiles = hermes.get("cat_profiles")
-    if isinstance(profiles, list) and profiles:
-        return [str(slug) for slug in profiles]
-    debate = get_debate_cats(config)
-    return debate + ["chair-cat"]
+def get_all_cats(config: dict[str, Any]) -> list[str]:
+    return get_debate_cats(config) + ["chair-cat"]

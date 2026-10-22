@@ -26,7 +26,7 @@ from council_common import (
     record_council_run,
     save_transcript,
 )
-from hermes_research import post_council_review, pre_council_analysis
+from council_research import post_council_review, pre_council_analysis
 
 logger = logging.getLogger(__name__)
 

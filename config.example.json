@@ -37,16 +37,5 @@
     "submissions_per_run": 4,
     "max_extra_rounds": 2,
     "max_submission_chars": 500
-  },
-
-  "hermes": {
-    "enabled": true,
-    "cli_command": "hermes",
-    "home": "~/.hermes",
-    "chronicler_profile": "council-chronicler",
-    "curator_profile": "council-curator",
-    "cat_profiles": ["barnaby", "cleo", "kiwi", "chair-cat"],
-    "timeout_seconds": 900,
-    "toolsets": ""
   }
 }

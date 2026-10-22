@@ -4,24 +4,21 @@
 #
 # Usage:
 #   ./scripts/vps_setup.sh
-#   ./scripts/vps_setup.sh --install-hermes
 #   ./scripts/vps_setup.sh --install-systemd --user "$USER" --install-dir "$HOME/council-of-cats"
 
 set -euo pipefail
 
-INSTALL_HERMES=false
 INSTALL_SYSTEMD=false
 SERVICE_USER="${USER:-council}"
 INSTALL_DIR=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --install-hermes) INSTALL_HERMES=true; shift ;;
         --install-systemd) INSTALL_SYSTEMD=true; shift ;;
         --user) SERVICE_USER="$2"; shift 2 ;;
         --install-dir) INSTALL_DIR="$2"; shift 2 ;;
         -h|--help)
-            sed -n '2,8p' "$0"
+            sed -n '2,7p' "$0"
             exit 0
             ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
@@ -94,24 +91,6 @@ mkdir -p \
 touch "$INSTALL_DIR/research/memory/council_memory.md" 2>/dev/null || true
 echo "==> Research directories ready"
 
-# --- Hermes (optional) ---
-if [[ "$INSTALL_HERMES" == true ]]; then
-    if command -v hermes >/dev/null 2>&1; then
-        echo "==> Hermes already installed"
-    else
-        echo "==> Installing Hermes Agent..."
-        curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
-    fi
-    echo "==> Seeding Hermes profiles (requires hermes on PATH)..."
-    if command -v hermes >/dev/null 2>&1; then
-        cd "$INSTALL_DIR"
-        python scripts/seed_hermes_profiles.py || echo "WARN: Hermes profile seeding failed — run manually after 'hermes setup'"
-    else
-        echo "WARN: hermes not on PATH after install. Log out/in or add to PATH, then run:"
-        echo "      python scripts/seed_hermes_profiles.py"
-    fi
-fi
-
 # --- systemd (optional) ---
 if [[ "$INSTALL_SYSTEMD" == true ]]; then
     UNIT_PATH="/etc/systemd/system/council.service"
@@ -152,10 +131,5 @@ echo ""
 if [[ "$INSTALL_SYSTEMD" == true ]]; then
     echo "    Or via systemd (after council.env is filled):"
     echo "      sudo systemctl enable --now council"
-fi
-if [[ "$INSTALL_HERMES" != true ]]; then
-    echo ""
-    echo " Hermes not installed. To add later:"
-    echo "      ./scripts/vps_setup.sh --install-hermes"
 fi
 echo "============================================"

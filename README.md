@@ -1,6 +1,6 @@
 # Council of Cats
 
-A weekly Discord simulation where cat personas debate your community's drama. Everything runs on a **single VPS**: a Discord bot scrapes channel logs, Gemini generates the council debate, and an optional [Hermes Agent](https://hermes-agent.nousresearch.com/) layer handles pre-council analysis and post-council persona refinement.
+A weekly Discord simulation where cat personas debate your community's drama. Everything runs on a **single VPS**: a Discord bot scrapes channel logs, and Gemini handles pre-council analysis, the council debate, and post-council persona refinement.
 
 Created as a stupid experiment to make use of Hermes agent for research while fullfilling a particular request to "unleash a council of cats upon the Discord". 
 
@@ -8,13 +8,12 @@ Created as a stupid experiment to make use of Hermes agent for research while fu
 
 ```text
 Discord  -->  council_service.py  -->  Gemini API
-                      |
-                      +--> Hermes (chronicler + curator + cat profiles)
+                      |                  (chronicler, debate, self-reviews, curator)
                       |
                       +--> Discord webhooks (one per cat)
 ```
 
-Production debate turn-taking is **deterministic** in `council_orchestrator.py`. Hermes is a research sidecar, not the live orchestrator.
+The whole pipeline is **deterministic** Python in `council_orchestrator.py`; every model call goes through `LLMClient`. (Hermes Agent was used here originally, but only as a tool-less prompt runner, so it has been removed.)
 
 A split deployment (local Windows PC + Ollama + tunnel) is still supported via legacy `ollama` config — see [Migrating to local inference](#migrating-to-local-inference).
 
@@ -26,12 +25,11 @@ council-of-cats/
 ├── council_common.py          # Shared config, LLM client, personas, webhooks
 ├── council_orchestrator.py    # Debate pipeline (pre-analysis → turns → post-review)
 ├── council_service.py         # Discord bot entry point (run this on the VPS)
-├── hermes_research.py
+├── council_research.py        # Chronicler + post-council review
 ├── personas/                  # SOUL.md + council-voice.md per cat
 ├── prompts/
 ├── research/
 └── scripts/
-    ├── seed_hermes_profiles.py
     └── run_council_test.py    # Manual test without Discord
 ```
 
@@ -42,14 +40,13 @@ council-of-cats/
 - Linux (Ubuntu/Debian recommended)
 - Discord bot token with **MESSAGE CONTENT INTENT** enabled
 - [Gemini API key](https://aistudio.google.com/apikey)
-- Optional: [Hermes Agent](https://hermes-agent.nousresearch.com/) on the same VPS
 
 ### Discord
 - One source channel (logs are read from here)
 - Four webhook URLs (Chair Cat, Barnaby, Cleo, Kiwi)
 - Bot invited to the server with read/send permissions
 
-Hermes and OpenClaw can run on the same VPS if they use **separate Discord bots/channels** — do not route the council through another agent's gateway.
+Other agents (e.g. Hermes, OpenClaw) can run on the same VPS if they use **separate Discord bots/channels** — do not route the council through another agent's gateway.
 
 ---
 
@@ -61,8 +58,6 @@ Automated bootstrap (recommended):
 git clone <your-repo> council-of-cats
 cd council-of-cats
 ./scripts/vps_setup.sh --install-systemd --user "$USER"
-# Optional Hermes:
-./scripts/vps_setup.sh --install-hermes
 ```
 
 Then fill in secrets:
@@ -121,7 +116,6 @@ Edit `config.json` for non-secret settings (or use env vars above for secrets):
 | `council.submissions_per_run` | Max queued agenda items discussed per run (default `4`, FIFO) |
 | `council.max_extra_rounds` | Max cat rounds per agenda item, including the first (default `2`) |
 | `council.max_submission_chars` | Max length for `!council submit` text (default `500`) |
-| `hermes.enabled` | Set `false` to skip Hermes (LLM fallback for summary) |
 
 Discord commands:
 
@@ -137,53 +131,17 @@ Anyone may queue agenda items with `!council submit …`. The queue is uncapped;
 
 ---
 
-## 2. Hermes setup (optional research layer)
-
-Install Hermes on the VPS:
-
-```bash
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
-hermes setup --portal
-```
-
-Point Hermes at Gemini in its own config, then seed council profiles:
-
-```bash
-python scripts/seed_hermes_profiles.py
-```
-
-| Profile | Role |
-|---|---|
-| `council-chronicler` | Pre-council analysis + cross-week memory |
-| `council-curator` | Post-council review orchestrator |
-| `barnaby`, `cleo`, `kiwi`, `chair-cat` | Persona storage and self-review |
-
-Recommended:
-- Minimal toolsets for cat profiles (`hermes.toolsets: ""` in config).
-- Pin mature skills with `hermes curator pin council-voice`.
-- Use a different model for the Curator auxiliary LLM if possible.
-
-### Hermes runtime behaviour
-
-| Step | Hermes profile | Fallback |
-|---|---|---|
-| Pre-council analysis | `council-chronicler` | Gemini single-shot summary |
-| Live debate | *(none — hardcoded loop)* | — |
-| Post-council review | `council-curator` + cat profiles | Per-cat self-reviews only |
-
----
-
-## 3. Pipeline walkthrough
+## 2. Pipeline walkthrough
 
 1. **Discord** — `!council run` fetches 7 days of messages, sanitizes to `[Username]: message`. Loads up to `submissions_per_run` oldest queued agenda items.
-2. **Pre-council** — chronicler returns JSON: summary, memory callbacks, memory updates.
+2. **Pre-council** — chronicler prompt returns JSON: summary, memory callbacks, memory updates (plain summary fallback if that fails).
 3. **Debate** — deterministic turns via Gemini:
    - Chair Cat intro
    - Barnaby → Cleo → Kiwi (×2 rounds)
    - For each queued agenda item (up to 4): Chair introduces topic → one cat round → Chair gavel (`CONTINUE: yes/no`) → optional second cat round
    - Chair Cat closing rulings
 4. **Discord** — each turn posts to that cat's webhook with a 2-second delay.
-5. **Post-council** — curator reviews transcript, patches `council-voice.md`, writes optional `SOUL.md` candidates to `research/persona-patches/`. Discussed submissions are cleared from the queue only after a successful run.
+5. **Post-council** — each cat self-reviews its lines, then the curator reviews the transcript plus those self-reviews, patches `council-voice.md`, writes optional `SOUL.md` candidates to `research/persona-patches/`. Discussed submissions are cleared from the queue only after a successful run.
 
 Artifacts:
 - `research/transcripts/` — weekly transcripts
@@ -195,7 +153,7 @@ Artifacts:
 
 ---
 
-## 4. Scheduled runs (cron / systemd — no `!council run` needed)
+## 3. Scheduled runs (cron / systemd — no `!council run` needed)
 
 The Discord bot is only needed for **manual** triggers. For weekly automation, use `scripts/run_council_scheduled.py` — it connects briefly, scrapes logs from `DISCORD_READ_CHANNEL_ID`, runs the pipeline, posts cat dialogue via webhooks, and posts a completion message to `DISCORD_STATUS_CHANNEL_ID`.
 
@@ -229,7 +187,7 @@ Cat dialogue still goes to the **webhook channels** configured in `council.env`.
 
 ---
 
-## 5. Manual test (no Discord)
+## 4. Manual test (no Discord)
 
 ```bash
 python scripts/run_council_test.py
@@ -240,7 +198,7 @@ This runs the full pipeline including webhooks — use a test Discord server or 
 
 ---
 
-## 6. systemd service
+## 5. systemd service
 
 `/etc/systemd/system/council.service`:
 
@@ -269,7 +227,7 @@ sudo journalctl -u council -f
 
 ---
 
-## 7. Migrating to local inference
+## 6. Migrating to local inference
 
 To run the debate loop on a Windows PC with Ollama again, replace the `llm` block with legacy Ollama config and split the gateway:
 
@@ -285,38 +243,38 @@ You would then reintroduce a separate HTTP receiver or run `scripts/run_council_
 
 ---
 
-## 8. Prompt reference
+## 7. Prompt reference
 
 | File | Used by |
 |---|---|
-| `prompts/chronicler_system.md` | Hermes chronicler / seeded SOUL |
+| `prompts/chronicler_system.md` | Pre-council system prompt |
 | `prompts/chronicler_user.md` | Pre-council user prompt |
 | `prompts/summarize_fallback_*.md` | LLM fallback summary |
 | `prompts/chair_intro_user.md` | Chair Cat opening turn |
 | `prompts/debate_turn_user.md` | Council member turns |
 | `prompts/chair_closing_user.md` | Chair Cat closing turn |
-| `prompts/curator_system.md` | Hermes curator / seeded SOUL |
+| `prompts/curator_system.md` | Post-council review system prompt |
 | `prompts/curator_user.md` | Post-council review prompt |
-| `prompts/cat_self_review.md` | Per-cat Hermes self-review |
+| `prompts/cat_self_review.md` | Per-cat self-review |
 | `personas/*/SOUL.md` | Stable cat identity |
 | `personas/*/council-voice.md` | Evolving voice refinements |
 
 ---
 
-## 9. Troubleshooting
+## 8. Troubleshooting
 
 | Symptom | Check |
 |---|---|
 | `LLM API key missing` | Set `llm.api_key` or `LLM_API_KEY` env var |
 | Gemini auth errors | API key valid? Billing enabled on Google AI Studio? |
-| Hermes skipped | `hermes.enabled: false` or `hermes` not on PATH |
+| `Brief source: llm-fallback` | Chronicler returned invalid JSON — check service logs |
 | Empty council output | Model name correct? Check service logs |
 | Webhooks fail | URLs valid? Messages under Discord 2000-char limit? |
 | Manual trigger denied (cooldown) | Wait for `manual_cooldown_days`, or use an admin user ID |
 
 ---
 
-## 10. Security notes
+## 9. Security notes
 
 - Never commit `config.json` or `council.env` (tokens, webhooks, API keys).
 - Prefer `council.env` + `LLM_API_KEY` over hardcoding secrets in `config.json`.

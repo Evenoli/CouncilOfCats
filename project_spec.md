@@ -4,7 +4,7 @@
 ## 1. Executive Summary
 A low-stakes agentic AI project designed to run a weekly automated simulation of a "Council of Cats." The system fetches the past 7 days of message history from a specific Discord channel, compiles a bulleted summary, and orchestrates a highly visible, sequential round-robin debate between multiple distinct cat personas using an OpenAI-compatible LLM API (default: **Gemini**). Output is formatted and pushed sequentially to Discord via webhooks.
 
-A **Hermes Agent research layer** runs on the same VPS. Hermes handles pre-council analysis (with cross-week memory) and post-council persona refinement. The live debate loop remains a hardcoded, deterministic orchestrator — Hermes does not orchestrate turn-taking or webhook delivery.
+Pre-council analysis (with cross-week memory) and post-council persona refinement are plain LLM calls through the same client as the debate. The whole pipeline is a hardcoded, deterministic orchestrator — no agent framework is involved.
 
 A split deployment (local Windows PC + Ollama + tunnel) remains possible via legacy `ollama` config for future migration.
 
@@ -21,16 +21,12 @@ Everything runs on a **single Linux VPS**:
    - Calls `council_orchestrator.run_council_pipeline()` in-process (no HTTP tunnel).
 
 2. **Council Orchestrator (`council_orchestrator.py`):**
-   - Pre-council analysis (Hermes chronicler, with LLM fallback).
+   - Pre-council analysis (chronicler prompt, with plain-summary fallback).
    - Deterministic 8-turn debate loop via `LLMClient` (Gemini by default).
-   - Post-council review (Hermes curator, async).
+   - Post-council review (cat self-reviews + curator, async).
    - Transcript and research artifact storage.
 
-3. **Hermes Research Layer (optional, same VPS):**
-   - [Hermes Agent](https://hermes-agent.nousresearch.com/) profiles for chronicler, curator, and cat personas.
-   - Persona files synced from `~/.hermes/profiles/` into `personas/` after review.
-
-Hermes and OpenClaw may coexist on the VPS if they use separate Discord bots/channels. The council pipeline must not be routed through another agent's gateway.
+Other agents (e.g. Hermes, OpenClaw) may coexist on the VPS if they use separate Discord bots/channels. The council pipeline must not be routed through another agent's gateway.
 
 ---
 
@@ -43,13 +39,13 @@ Hermes and OpenClaw may coexist on the VPS if they use separate Discord bots/cha
 - **Sanitisation:** Strips system messages, bot messages, and empty content; formats as `[Username]: Message content`.
 - Passes `raw_logs` directly to the orchestrator.
 
-### Step 2: Pre-Council Analysis (Hermes)
-The `council-chronicler` Hermes profile receives raw logs and produces the council briefing.
+### Step 2: Pre-Council Analysis (Chronicler)
+A single LLM call with the chronicler prompt receives raw logs and produces the council briefing.
 
-- **Profile:** `council-chronicler`
+- **Prompts:** `prompts/chronicler_system.md`, `prompts/chronicler_user.md`
 - **Input:** Raw logs + `research/memory/council_memory.md`
 - **Output:** JSON with `summary`, `memory_callbacks`, `memory_updates`
-- **Fallback:** Single-shot LLM summarisation (same shape, no memory) if Hermes is unavailable.
+- **Fallback:** Single-shot LLM summarisation (same shape, no memory) if the chronicler call fails or returns invalid JSON.
 
 ### Step 3: The Council Debate Loop
 Hardcoded deterministic orchestrator. Cat system prompts loaded from `personas/{cat}/`.
@@ -61,31 +57,18 @@ Hardcoded deterministic orchestrator. Cat system prompts loaded from `personas/{
 
 Debate order is configured in `config.json` → `cats.debate_order`. Community items arrive via Discord `!council submit …`.
 
-### Step 4: Post-Council Review (Hermes)
-`council-curator` reviews the transcript and refines personas.
+### Step 4: Post-Council Review (Curator)
+Runs async after the debate.
 
-- Cat self-reviews via pinned Hermes profiles
-- `council-voice` skills patched automatically
+- Each cat self-reviews its own lines (one LLM call per cat, in persona)
+- The curator reviews the transcript plus those self-reviews
+- `personas/*/council-voice.md` patched automatically
 - Proposed `SOUL.md` changes written to `research/persona-patches/` (never auto-overwritten)
-- Persona sync from Hermes profiles into `personas/`
+- If the curator fails, the self-reviews alone are saved and applied
 
 ---
 
-## 4. Hermes Profile Setup
-
-| Profile | Role |
-|---|---|
-| `council-chronicler` | Pre-council analysis + cross-week memory |
-| `council-curator` | Post-council review orchestrator |
-| `barnaby`, `cleo`, `kiwi`, `chair-cat` | Persona storage and self-review |
-
-```bash
-python scripts/seed_hermes_profiles.py
-```
-
----
-
-## 5. Persona File Layout & Sync
+## 4. Persona File Layout
 
 ```text
 personas/
@@ -95,11 +78,11 @@ personas/
 └── chair-cat/
 ```
 
-Sync after review: `~/.hermes/profiles/{cat}/` → `personas/{cat}/`
+`personas/` is the only copy; review updates are written there directly.
 
 ---
 
-## 6. Technical Constraints & API Requirements
+## 5. Technical Constraints & API Requirements
 
 ### LLM API Integration
 - OpenAI-compatible chat completions via `openai` Python SDK.
@@ -111,14 +94,9 @@ Sync after review: `~/.hermes/profiles/{cat}/` → `personas/{cat}/`
 - One webhook per cat slug in `config.json` → `webhooks`.
 - Sequential delivery with configurable delay (`council.webhook_delay_seconds`).
 
-### Hermes Integration
-- Optional at runtime; intended research path.
-- Invoked via `hermes -p <profile> -z "<prompt>"`.
-- Cat profiles should use minimal toolsets during review.
-
 ---
 
-## 7. Directory Blueprint
+## 6. Directory Blueprint
 
 ```text
 council-of-cats/
@@ -126,16 +104,15 @@ council-of-cats/
 ├── council_common.py
 ├── council_orchestrator.py
 ├── council_service.py           # VPS entry point
-├── hermes_research.py
+├── council_research.py         # Chronicler + post-council review
 ├── personas/
 ├── prompts/
 ├── research/
 └── scripts/
-    ├── seed_hermes_profiles.py
     └── run_council_test.py
 ```
 
-## 8. Configuration Reference
+## 7. Configuration Reference
 
 ```json
 {

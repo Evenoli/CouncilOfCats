@@ -9,4 +9,7 @@ Run the post-council review for this week's session.
 ## Per-cat line extractions
 {cat_extractions}
 
+## Cat self-reviews (JSON)
+{cat_self_reviews}
+
 Return the JSON review object now.
