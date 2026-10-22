@@ -5,6 +5,8 @@ Description=Weekly Council of Cats run
 # Sundays at 18:00 UTC — edit OnCalendar to taste
 OnCalendar=Sun *-*-* 18:00:00 UTC
 Persistent=true
+# Without this the timer would activate council.service (the always-on bot) and do nothing
+Unit=council-scheduled.service
 
 [Install]
 WantedBy=timers.target
